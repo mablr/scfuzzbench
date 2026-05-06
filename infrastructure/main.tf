@@ -335,14 +335,15 @@ resource "aws_iam_instance_profile" "fuzzer" {
 resource "aws_instance" "fuzzer" {
   for_each = local.instance_map
 
-  ami                         = data.aws_ssm_parameter.ubuntu_ami.value
-  instance_type               = var.instance_type
-  associate_public_ip_address = true
-  subnet_id                   = aws_subnet.public.id
-  vpc_security_group_ids      = [aws_security_group.ssh.id]
-  key_name                    = aws_key_pair.ssh.key_name
-  iam_instance_profile        = aws_iam_instance_profile.fuzzer.name
-  user_data_replace_on_change = true
+  ami                                  = data.aws_ssm_parameter.ubuntu_ami.value
+  instance_type                        = var.instance_type
+  associate_public_ip_address          = true
+  subnet_id                            = aws_subnet.public.id
+  vpc_security_group_ids               = [aws_security_group.ssh.id]
+  key_name                             = aws_key_pair.ssh.key_name
+  iam_instance_profile                 = aws_iam_instance_profile.fuzzer.name
+  instance_initiated_shutdown_behavior = "terminate"
+  user_data_replace_on_change          = true
 
   user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
     fuzzer_key                   = each.value.fuzzer.key
