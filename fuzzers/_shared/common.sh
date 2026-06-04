@@ -968,6 +968,10 @@ run_with_timeout() {
   timeout --signal=SIGINT --kill-after="${kill_after}s" "${SCFUZZBENCH_TIMEOUT_SECONDS}s" "$@" 2>&1 | tee "${log_file}"
   local exit_code=${PIPESTATUS[0]}
   set -e
+  if [[ "${exit_code}" -eq 124 ]]; then
+    log "Command reached configured benchmark timeout; treating as completed run"
+    return 0
+  fi
   return ${exit_code}
 }
 
