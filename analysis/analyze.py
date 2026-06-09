@@ -22,12 +22,12 @@ FOUNDATION_JSON_RE = re.compile(r"^\s*\{.*\}\s*$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 FALSIFIED_RE = re.compile(r"Test\s+([^\s]+)\s+falsified!")
 ECHIDNA_FAILED_RE = re.compile(r"^([A-Za-z0-9_]+)\([^)]*\):\s+failed!")
-FOUNDRY_FAIL_LINE_RE = re.compile(r"^\s*\[FAIL(?:[^\]]*)\]\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+FOUNDRY_FAIL_LINE_RE = re.compile(r"\[FAIL(?:[^\]]*)\]\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 FOUNDRY_TEST_RESULT_RE = re.compile(
-    r"^\s*(?:\[[^\]]+\]\s+)?(?:test|invariant)[A-Za-z0-9_]*\s*\(\)\s*:\s*(?:FAIL|failed)\b",
+    r"(?:\[[^\]]+\]\s+)?(?:test|invariant)[A-Za-z0-9_]*\s*\(\)\s*:\s*(?:FAIL|failed)\b",
     re.IGNORECASE,
 )
-FOUNDRY_RESULT_NAME_RE = re.compile(r"^\s*(?:\[[^\]]+\]\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+FOUNDRY_RESULT_NAME_RE = re.compile(r"(?:\[[^\]]+\]\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 TX_RATE_PATTERNS = [
     re.compile(r"(?i)(?:tx|txn|transactions?|calls?)\s*(?:/|per)\s*s(?:ec(?:ond)?)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r"(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:tx|txn|transactions?|calls?)\s*/\s*s(?:ec(?:ond)?)?\b"),

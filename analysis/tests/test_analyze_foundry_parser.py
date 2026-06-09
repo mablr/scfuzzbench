@@ -107,6 +107,27 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[0].elapsed_seconds, 6.0)
         self.assertAlmostEqual(events[1].elapsed_seconds, 6.0)
 
+    def test_parses_prefixed_foundry_text_failure_summary_lines(self):
+        log_path = self.write_log(
+            [
+                "fuzz: elapsed: 6s, calls: 61658 (20486/sec), failures: 15/762",
+                "│ [FAIL: invariant broken] invariant_poolBalance() (runs: 256, calls: 3840, reverts: 0)",
+                "2026-06-09T00:00:00Z [FAIL: assertion failed] assert_healthFactor_ASSERTION_CANARY() (gas: 12345)",
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-master")
+        self.assertEqual(
+            [event.event for event in events],
+            ["invariant_poolBalance", "assert_healthFactor_ASSERTION_CANARY"],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            ["foundry-text-failure", "foundry-text-failure"],
+        )
+        self.assertAlmostEqual(events[0].elapsed_seconds, 6.0)
+        self.assertAlmostEqual(events[1].elapsed_seconds, 6.0)
+
     def test_parses_foundry_text_test_result_lines_without_elapsed(self):
         log_path = self.write_log(
             [
