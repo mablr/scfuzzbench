@@ -123,9 +123,9 @@ class FoundryParserTests(unittest.TestCase):
     def test_promotes_broken_handler_metrics_from_oss333_pulse_events(self):
         log_path = self.write_log(
             [
-                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_handlers":0},"tps":10,"gps":100,"worker":{"id":0,"count":1}}',
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_assertions":0},"tps":10,"gps":100,"worker":{"id":0,"count":1}}',
                 '{"timestamp":101,"event":"failure","invariant":"invariant_a","target":"CryticToFoundry","reason":"broken"}',
-                '{"timestamp":102,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":1,"broken_handlers":2},"tps":12,"gps":120,"worker":{"id":0,"count":1}}',
+                '{"timestamp":102,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":1,"broken_assertions":2},"tps":12,"gps":120,"worker":{"id":0,"count":1}}',
             ]
         )
 

@@ -81,8 +81,8 @@ class ProgressMetricsParserTests(unittest.TestCase):
     def test_parses_foundry_progress_metrics_from_oss333_pulse(self):
         log_path = self.write_log(
             [
-                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":231,"corpus_count":47,"favored_items":34,"broken_invariants":0,"broken_handlers":0},"total_txs":20,"total_gas":2000,"tps":10.12,"gps":1000.34,"worker":{"id":0,"count":1}}',
-                '{"timestamp":105,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":259,"corpus_count":65,"favored_items":44,"broken_invariants":1,"broken_handlers":2},"total_txs":80,"total_gas":9000,"tps":16.0,"gps":1800.0,"worker":{"id":0,"count":1}}',
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":231,"corpus_count":47,"favored_items":34,"broken_invariants":0,"broken_assertions":0},"total_txs":20,"total_gas":2000,"tps":10.12,"gps":1000.34,"worker":{"id":0,"count":1}}',
+                '{"timestamp":105,"event":"pulse","contract":"CryticToFoundry","metrics":{"cumulative_edges_seen":259,"corpus_count":65,"favored_items":44,"broken_invariants":1,"broken_assertions":2},"total_txs":80,"total_gas":9000,"tps":16.0,"gps":1800.0,"worker":{"id":0,"count":1}}',
             ]
         )
 
