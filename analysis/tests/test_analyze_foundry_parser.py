@@ -120,6 +120,35 @@ class FoundryParserTests(unittest.TestCase):
         self.assertAlmostEqual(events[1].elapsed_seconds, 2.0)
         self.assertAlmostEqual(events[4].elapsed_seconds, 4.0)
 
+    def test_promotes_broken_handler_metrics_from_oss333_pulse_events(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":0,"broken_handlers":0},"tps":10,"gps":100,"worker":{"id":0,"count":1}}',
+                '{"timestamp":101,"event":"failure","invariant":"invariant_a","target":"CryticToFoundry","reason":"broken"}',
+                '{"timestamp":102,"event":"pulse","contract":"CryticToFoundry","metrics":{"broken_invariants":1,"broken_handlers":2},"tps":12,"gps":120,"worker":{"id":0,"count":1}}',
+            ]
+        )
+
+        events = analyze.parse_foundry_log(log_path, "run-1", "i-1", "foundry-git-test")
+        self.assertEqual(
+            [event.event for event in events],
+            [
+                "invariant_a",
+                "foundry_handler_bug_1",
+                "foundry_handler_bug_2",
+            ],
+        )
+        self.assertEqual(
+            [event.source for event in events],
+            [
+                "foundry-failure-event",
+                "foundry-broken-handler-metric",
+                "foundry-broken-handler-metric",
+            ],
+        )
+        self.assertAlmostEqual(events[1].elapsed_seconds, 2.0)
+        self.assertAlmostEqual(events[2].elapsed_seconds, 2.0)
+
     def test_parses_foundry_text_failure_summary_lines(self):
         log_path = self.write_log(
             [
