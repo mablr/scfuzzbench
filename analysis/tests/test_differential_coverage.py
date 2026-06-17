@@ -5,9 +5,28 @@ import unittest
 from pathlib import Path
 
 from analysis import analyze
+from analysis.differential_coverage import DifferentialCoverage
 
 
 class DifferentialCoverageTests(unittest.TestCase):
+    def test_relcov_uses_median_trial_coverage_for_measured_approach(self):
+        coverage = DifferentialCoverage(
+            {
+                "foundry": {
+                    "trial-1": {"a", "b", "c"},
+                    "trial-2": {"d", "e", "f"},
+                },
+                "reference": {
+                    "trial-1": {"a", "b", "c", "d", "e", "f"},
+                },
+            }
+        )
+
+        self.assertEqual(
+            coverage.approaches["foundry"].relcov(coverage.approaches["reference"]),
+            0.5,
+        )
+
     def test_writes_normalized_showmap_campaigns_and_relscores(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

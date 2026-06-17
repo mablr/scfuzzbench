@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from statistics import median
 from typing import Dict, Iterable, Iterator, Set, Tuple
 
 
@@ -17,7 +18,14 @@ class ApproachCoverage:
         reference_edges = reference.edges
         if not reference_edges:
             return 0.0
-        return len(self.edges & reference_edges) / len(reference_edges)
+        if not self.trials:
+            return 0.0
+        return float(
+            median(
+                len(trial_edges & reference_edges) / len(reference_edges)
+                for trial_edges in self.trials.values()
+            )
+        )
 
 
 class DifferentialCoverage:
