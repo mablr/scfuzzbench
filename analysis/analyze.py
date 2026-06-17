@@ -14,7 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from differential_coverage import DifferentialCoverage
+try:
+    from .differential_coverage import DifferentialCoverage
+except ImportError:
+    from differential_coverage import DifferentialCoverage
 
 LOG_FILE_RE = re.compile(r".+\.log$")
 INSTANCE_PREFIX_RE = re.compile(r"^(i-[0-9a-f]+)-(.*)$")
