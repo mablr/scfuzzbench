@@ -27,7 +27,7 @@ Notes:
   "fuzzers": ["echidna", "medusa", "foundry", "recon-fuzzer"],
   "foundry_version": "",
   "foundry_git_repo": "https://github.com/foundry-rs/foundry",
-  "foundry_git_ref": "0e526570be2a832ffcfb52f489788cd5751cb130",
+  "foundry_git_ref": "master",
   "echidna_version": "",
   "medusa_version": "",
   "recon_version": "",
