@@ -35,9 +35,13 @@ SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS=${SCFUZZBENCH_RUNNER_METRICS_INTERVA
 SCFUZZBENCH_AWS_CREDS_ENV_FILE=${SCFUZZBENCH_AWS_CREDS_ENV_FILE:-${SCFUZZBENCH_ROOT}/aws_creds.env}
 SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS=${SCFUZZBENCH_AWS_CREDS_REFRESH_SECONDS:-300}
 
+iso_timestamp() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
 log() {
   # Use stderr so command substitutions can safely capture stdout.
-  echo "[$(date -Is)] $*" >&2
+  echo "[$(iso_timestamp)] $*" >&2
 }
 
 retry_cmd() {
@@ -57,6 +61,59 @@ retry_cmd() {
     sleep "${delay}" || true
     attempt=$((attempt + 1))
   done
+}
+
+sed_in_place() {
+  if [[ "$#" -lt 2 ]]; then
+    log "sed_in_place requires sed arguments and a target file"
+    return 2
+  fi
+
+  local file="${@: -1}"
+  local sed_arg_count=$(( $# - 1 ))
+  local -a sed_args=("${@:1:${sed_arg_count}}")
+  local tmp_file
+  tmp_file=$(mktemp "${file}.tmp.XXXXXX")
+  if sed "${sed_args[@]}" "${file}" > "${tmp_file}"; then
+    cat "${tmp_file}" > "${file}"
+    rm -f "${tmp_file}"
+    return 0
+  fi
+  rm -f "${tmp_file}"
+  return 1
+}
+
+prepend_path_once() {
+  local dir="${1:-}"
+  if [[ -z "${dir}" || ! -d "${dir}" ]]; then
+    return 0
+  fi
+  case ":${PATH}:" in
+    *":${dir}:"*) ;;
+    *) export PATH="${dir}:${PATH}" ;;
+  esac
+}
+
+prepend_foundry_bin_if_needed() {
+  if [[ -z "${HOME:-}" ]]; then
+    return 0
+  fi
+  local foundry_bin="${HOME}/.foundry/bin"
+  if [[ ! -d "${foundry_bin}" ]]; then
+    return 0
+  fi
+  if is_local_mode && command -v forge >/dev/null 2>&1; then
+    local active_forge
+    active_forge=$(command -v forge)
+    case "${active_forge}" in
+      "${foundry_bin}/"*) ;;
+      *)
+        log "Keeping existing forge on PATH for local mode: ${active_forge}"
+        return 0
+        ;;
+    esac
+  fi
+  prepend_path_once "${foundry_bin}"
 }
 
 require_env() {
@@ -239,7 +296,7 @@ append_runner_command_log() {
     rendered_cmd="(empty command)"
   fi
   printf '[%s] timeout=%ss grace=%ss cmd=%s\n' \
-    "$(date -Is)" \
+    "$(iso_timestamp)" \
     "${timeout_seconds}" \
     "${grace_seconds}" \
     "${rendered_cmd}" \
@@ -258,7 +315,7 @@ install_shutdown_script() {
   if is_local_mode; then
     cat <<'SHUTDOWN' >"${shutdown_path}"
 #!/usr/bin/env bash
-echo "[$(date -Is)] Shutdown suppressed (local mode)"
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Shutdown suppressed (local mode)"
 SHUTDOWN
   else
     cat <<'SHUTDOWN' >"${shutdown_path}"
@@ -266,7 +323,7 @@ SHUTDOWN
 set +e
 
 log() {
-  echo "[$(date -Is)] $*"
+  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $*"
 }
 
 log "Shutting down instance"
@@ -315,6 +372,10 @@ start_runner_metrics() {
     log "Runner metrics skipped; SCFUZZBENCH_LOG_DIR is empty."
     return 0
   fi
+  if [[ ! -r /proc/stat || ! -r /proc/uptime || ! -r /proc/loadavg || ! -r /proc/meminfo ]]; then
+    log "Runner metrics skipped; Linux /proc metrics are unavailable on this host."
+    return 0
+  fi
   mkdir -p "${SCFUZZBENCH_LOG_DIR}"
   local metrics_file="${SCFUZZBENCH_LOG_DIR}/runner_metrics.csv"
   local interval="${SCFUZZBENCH_RUNNER_METRICS_INTERVAL_SECONDS:-5}"
@@ -346,7 +407,7 @@ start_runner_metrics() {
 
     while true; do
       local ts uptime_seconds load1 load5 load15
-      ts=$(date -Is)
+      ts=$(iso_timestamp)
       uptime_seconds=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
       if [[ -z "${uptime_seconds}" ]]; then
         uptime_seconds=0
@@ -541,7 +602,7 @@ install_foundry() {
       export HOME=/root
     fi
     curl -L https://foundry.paradigm.xyz | bash
-    export PATH="${HOME}/.foundry/bin:${PATH}"
+    prepend_path_once "${HOME}/.foundry/bin"
     "${HOME}/.foundry/bin/foundryup" -i "${FOUNDRY_VERSION}"
     forge --version
   fi
@@ -849,7 +910,7 @@ clone_target() {
     log "Initializing git submodules"
 
     # Normalize SSH/git URLs to https so public submodules don't require SSH keys.
-    sed -i \
+    sed_in_place \
       -e 's#git@github.com:#https://github.com/#g' \
       -e 's#ssh://git@github.com/#https://github.com/#g' \
       -e 's#git://github.com/#https://github.com/#g' \
@@ -915,7 +976,7 @@ apply_benchmark_type() {
     property)
       if grep -q "OPTIMIZATION_MODE = true" "${properties_file}" || grep -q "public returns (int256 maxViolation)" "${properties_file}"; then
         log "Switching benchmark to property mode"
-        sed -i \
+        sed_in_place \
           -e 's/OPTIMIZATION_MODE = true/OPTIMIZATION_MODE = false/' \
           -e 's/public returns (int256 maxViolation)/public returns (bool)/g' \
           -e 's/return maxViolation;/return maxViolation <= 0;/g' \
@@ -928,7 +989,7 @@ apply_benchmark_type() {
     optimization)
       if grep -q "OPTIMIZATION_MODE = false" "${properties_file}" || grep -q "public returns (bool)" "${properties_file}"; then
         log "Switching benchmark to optimization mode"
-        sed -i \
+        sed_in_place \
           -e 's/OPTIMIZATION_MODE = false/OPTIMIZATION_MODE = true/' \
           -e 's/public returns (bool)/public returns (int256 maxViolation)/g' \
           -e 's/return maxViolation <= 0;/return maxViolation;/g' \

@@ -9,7 +9,11 @@ prepare_workspace
 if [[ -z "${HOME:-}" ]]; then
   export HOME=/root
 fi
-export PATH="${HOME}/.foundry/bin:${PATH}"
+if declare -F prepend_foundry_bin_if_needed >/dev/null; then
+  prepend_foundry_bin_if_needed
+elif [[ -d "${HOME}/.foundry/bin" ]]; then
+  export PATH="${HOME}/.foundry/bin:${PATH}"
+fi
 
 require_env MEDUSA_VERSION
 SCFUZZBENCH_FUZZER_LABEL="medusa-v${MEDUSA_VERSION}"

@@ -9,7 +9,11 @@ prepare_workspace
 if [[ -z "${HOME:-}" ]]; then
   export HOME=/root
 fi
-export PATH="${HOME}/.foundry/bin:${PATH}"
+if declare -F prepend_foundry_bin_if_needed >/dev/null; then
+  prepend_foundry_bin_if_needed
+elif [[ -d "${HOME}/.foundry/bin" ]]; then
+  export PATH="${HOME}/.foundry/bin:${PATH}"
+fi
 
 require_env ECHIDNA_VERSION
 SCFUZZBENCH_FUZZER_LABEL="echidna-v${ECHIDNA_VERSION}"
@@ -25,7 +29,11 @@ if [[ "${SCFUZZBENCH_BENCHMARK_TYPE}" == "property" && -n "${ECHIDNA_CONFIG:-}" 
   fi
   if [[ -f "${config_path}" ]]; then
     log "Adjusting Echidna property prefix in ${config_path}"
-    sed -i 's/prefix:[[:space:]]*\"invariant_\"/prefix: \"echidna_\"/g' "${config_path}"
+    if declare -F sed_in_place >/dev/null; then
+      sed_in_place 's/prefix:[[:space:]]*\"invariant_\"/prefix: \"echidna_\"/g' "${config_path}"
+    else
+      sed -i 's/prefix:[[:space:]]*\"invariant_\"/prefix: \"echidna_\"/g' "${config_path}"
+    fi
   else
     log "Echidna config not found at ${config_path}; skipping prefix rewrite."
   fi

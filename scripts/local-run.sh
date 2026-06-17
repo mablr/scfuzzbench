@@ -168,11 +168,19 @@ if [[ -d "${HOME}/.local/lib" ]]; then
 fi
 
 export SCFUZZBENCH_LOCAL_MODE=1
+export SCFUZZBENCH_ROOT="${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}"
 export SCFUZZBENCH_COMMON_SH="${REPO_ROOT}/fuzzers/_shared/common.sh"
 export SCFUZZBENCH_REPO_URL="${REPO_URL}"
 export SCFUZZBENCH_COMMIT="${BRANCH}"
 export SCFUZZBENCH_BENCHMARK_TYPE="${BENCHMARK_TYPE}"
 export SCFUZZBENCH_TIMEOUT_SECONDS="${TIMEOUT}"
+if [[ -z "${SCFUZZBENCH_RUN_ID:-}" ]]; then
+  SCFUZZBENCH_RUN_ID="local-$(date -u +"%Y%m%dT%H%M%SZ")"
+  export SCFUZZBENCH_RUN_ID
+fi
+if [[ -z "${SCFUZZBENCH_LOG_DIR:-}" ]]; then
+  export SCFUZZBENCH_LOG_DIR="${SCFUZZBENCH_ROOT}/logs/${FUZZER}/${SCFUZZBENCH_RUN_ID}"
+fi
 
 # Versions – CLI flag → existing env → default
 export ECHIDNA_VERSION="${ECHIDNA_VERSION_ARG:-${ECHIDNA_VERSION:-${DEFAULT_ECHIDNA_VERSION}}}"
@@ -237,6 +245,7 @@ echo "  Type:      ${BENCHMARK_TYPE}"
 echo "  Timeout:   ${TIMEOUT}s"
 [[ -n "${WORKERS}" ]] && echo "  Workers:   ${WORKERS}"
 echo "  Workspace: ${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}"
+echo "  Logs:      ${SCFUZZBENCH_LOG_DIR}"
 echo "  Output:    ${SCFUZZBENCH_LOCAL_OUTPUT_DIR:-${SCFUZZBENCH_ROOT:-${HOME}/.scfuzzbench}/output}"
 echo "============================================"
 echo ""

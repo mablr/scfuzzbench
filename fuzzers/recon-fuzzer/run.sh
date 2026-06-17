@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/scfuzzbench/common.sh
+source "${SCFUZZBENCH_COMMON_SH:-/opt/scfuzzbench/common.sh}"
 
 register_shutdown_trap
 
 prepare_workspace
-export PATH="/root/.foundry/bin:${PATH}"
+if [[ -z "${HOME:-}" ]]; then
+  export HOME=/root
+fi
+if declare -F prepend_foundry_bin_if_needed >/dev/null; then
+  prepend_foundry_bin_if_needed
+elif [[ -d "${HOME}/.foundry/bin" ]]; then
+  export PATH="${HOME}/.foundry/bin:${PATH}"
+fi
 
 require_env RECON_VERSION
 recon_version="${RECON_VERSION#v}"
@@ -23,7 +30,11 @@ if [[ "${SCFUZZBENCH_BENCHMARK_TYPE}" == "property" && -n "${ECHIDNA_CONFIG:-}" 
   fi
   if [[ -f "${config_path}" ]]; then
     log "Adjusting property prefix in ${config_path}"
-    sed -i 's/prefix:[[:space:]]*\"invariant_\"/prefix: \"echidna_\"/g' "${config_path}"
+    if declare -F sed_in_place >/dev/null; then
+      sed_in_place 's/prefix:[[:space:]]*\"invariant_\"/prefix: \"echidna_\"/g' "${config_path}"
+    else
+      sed -i 's/prefix:[[:space:]]*\"invariant_\"/prefix: \"echidna_\"/g' "${config_path}"
+    fi
   else
     log "Config not found at ${config_path}; skipping prefix rewrite."
   fi
