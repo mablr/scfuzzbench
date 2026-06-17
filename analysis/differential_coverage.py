@@ -39,18 +39,38 @@ class DifferentialCoverage:
         if len(self.approaches) < 2:
             return ((approach, 0.0) for approach in self.approaches)
 
-        edge_approaches: Dict[str, Set[str]] = {}
-        for approach, coverage in self.approaches.items():
-            for edge in coverage.edges:
-                edge_approaches.setdefault(edge, set()).add(approach)
+        all_edges: Set[str] = set()
+        for coverage in self.approaches.values():
+            all_edges.update(coverage.edges)
+
+        approaches_that_never_hit_edge = {
+            edge: {
+                approach
+                for approach, coverage in self.approaches.items()
+                if edge not in coverage.edges
+            }
+            for edge in all_edges
+        }
 
         def scores() -> Iterator[Tuple[str, float]]:
             for approach, coverage in self.approaches.items():
-                exclusive_edges = sum(
-                    1
-                    for edge in coverage.edges
-                    if edge_approaches.get(edge) == {approach}
-                )
-                yield approach, float(exclusive_edges)
+                non_empty_trials = [
+                    trial_edges for trial_edges in coverage.trials.values() if trial_edges
+                ]
+                if not non_empty_trials:
+                    yield approach, 0.0
+                    continue
+
+                score = 0.0
+                for edge in all_edges:
+                    trials_that_hit_edge = sum(
+                        1 for trial_edges in non_empty_trials if edge in trial_edges
+                    )
+                    score += (
+                        len(approaches_that_never_hit_edge[edge])
+                        * trials_that_hit_edge
+                        / len(non_empty_trials)
+                    )
+                yield approach, score
 
         return scores()
