@@ -35,12 +35,13 @@ export TF_VAR_timeout_hours=1
 export TF_VAR_instances_per_fuzzer=4
 export TF_VAR_fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
 export TF_VAR_git_token_ssm_parameter_name="/scfuzzbench/recon/github_token"
-export TF_VAR_foundry_git_repo="https://github.com/aviggiano/foundry"
-export TF_VAR_foundry_git_ref="fail_on_assert"
+export TF_VAR_foundry_git_repo="https://github.com/foundry-rs/foundry"
+export TF_VAR_foundry_git_ref="0e526570be2a832ffcfb52f489788cd5751cb130"
 ```
 
-For Foundry runs, use [aviggiano/foundry](https://github.com/aviggiano/foundry/tree/fail_on_assert).
-Current analysis expects the branch's `event: failure` JSON events.
+For Foundry runs, use an upstream Foundry commit that includes
+[`foundry-rs/foundry#15198`](https://github.com/foundry-rs/foundry/pull/15198).
+Current analysis expects its `failure` JSON events and updated `pulse` metrics.
 
 ## Re-run A Benchmark
 

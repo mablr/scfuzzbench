@@ -42,11 +42,11 @@ on:
       foundry_git_repo:
         description: "Optional Foundry git repo (build from source)."
         required: false
-        default: "https://github.com/aviggiano/foundry"
+        default: "https://github.com/foundry-rs/foundry"
       foundry_git_ref:
         description: "Optional Foundry git ref (branch/tag/commit)."
         required: false
-        default: "fail_on_assert"
+        default: "0e526570be2a832ffcfb52f489788cd5751cb130"
       echidna_version:
         description: "Override Echidna version (optional)."
         required: false
@@ -120,12 +120,12 @@ on:
         description: "Optional Foundry git repo (build from source)."
         required: false
         type: string
-        default: "https://github.com/aviggiano/foundry"
+        default: "https://github.com/foundry-rs/foundry"
       foundry_git_ref:
         description: "Optional Foundry git ref (branch/tag/commit)."
         required: false
         type: string
-        default: "fail_on_assert"
+        default: "0e526570be2a832ffcfb52f489788cd5751cb130"
       echidna_version:
         description: "Override Echidna version (optional)."
         required: false
