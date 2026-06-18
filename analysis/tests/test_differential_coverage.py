@@ -86,6 +86,7 @@ class DifferentialCoverageTests(unittest.TestCase):
             self.assertEqual(manifest["raw_trials"], 2)
             self.assertEqual(manifest["skipped"], [])
             self.assertIn("combined", manifest["campaigns"])
+            self.assertIn("work_items", manifest["campaigns"]["combined"])
 
     def test_excludes_filtered_fuzzers_from_showmap_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,7 +155,7 @@ class DifferentialCoverageTests(unittest.TestCase):
                 (out_dir / "showmap_campaign_manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
-                sorted(manifest["campaigns"]["combined"].keys()),
+                sorted(manifest["campaigns"]["combined"]["approaches"].keys()),
                 ["foundry-master"],
             )
 
@@ -289,7 +290,7 @@ class DifferentialCoverageTests(unittest.TestCase):
             )
             self.assertEqual(manifest["raw_trials"], 4)
             self.assertEqual(
-                sorted(manifest["campaigns"]["combined"].keys()),
+                sorted(manifest["campaigns"]["combined"]["approaches"].keys()),
                 ["foundry-candidate", "foundry-master"],
             )
 
@@ -355,6 +356,44 @@ class DifferentialCoverageTests(unittest.TestCase):
             self.assertTrue((combined / "unknown").is_dir())
             self.assertTrue((combined / "candidate").is_dir())
             self.assertFalse((out_dir / "showmap_campaigns" / "i-live__trial-1.txt").exists())
+
+    def test_skips_large_by_test_campaigns_but_keeps_combined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            showmap_root = root / "logs" / "i-live" / "showmap"
+            for approach in ("foundry-master", "foundry-candidate"):
+                showmap_dir = showmap_root / f"{approach}__Suite"
+                showmap_dir.mkdir(parents=True)
+                (showmap_dir / "trial-1.txt").write_text(
+                    "a:1\nb:1\nc:1\n",
+                    encoding="utf-8",
+                )
+
+            out_dir = root / "out"
+            analyze.write_differential_coverage_outputs(
+                root / "logs",
+                out_dir,
+                max_work_items=1,
+            )
+
+            with (out_dir / "differential_coverage_relscores.csv").open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                sorted({row["campaign"] for row in rows}),
+                ["combined"],
+            )
+
+            manifest = json.loads(
+                (out_dir / "showmap_campaign_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "skipped_analysis",
+                manifest["campaigns"]["by_test/Suite"],
+            )
+            self.assertNotIn(
+                "skipped_analysis",
+                manifest["campaigns"]["combined"],
+            )
 
 
 if __name__ == "__main__":

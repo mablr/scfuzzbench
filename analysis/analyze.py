@@ -8,6 +8,7 @@ import re
 import shutil
 import statistics
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -52,6 +53,8 @@ TEXT_TX_COUNT_PATTERNS = [
 TEXT_GAS_COUNT_PATTERNS = [
     re.compile(r"(?i)\bgas\s*:\s*([0-9]+(?:\.[0-9]+)?)"),
 ]
+
+DEFAULT_SHOWMAP_MAX_WORK_ITEMS = 50_000_000
 
 TX_RATE_KEYS = (
     "tx_per_second",
@@ -1718,6 +1721,16 @@ def write_showmap_campaign_dir(
                     handle.write(f"{edge}:1\n")
 
 
+def showmap_campaign_work_items(campaign: Dict[str, Dict[str, Set[str]]]) -> int:
+    unique_edges: Set[str] = set()
+    trial_count = 0
+    for trials in campaign.values():
+        trial_count += len(trials)
+        for edges in trials.values():
+            unique_edges.update(edges)
+    return len(unique_edges) * max(trial_count, 1)
+
+
 def calculate_relscores(
     campaign: Dict[str, Dict[str, Set[str]]],
 ) -> Dict[str, float]:
@@ -1752,10 +1765,22 @@ def showmap_campaign_summary(
     return summary
 
 
+def showmap_max_work_items_from_env() -> int:
+    raw = os.environ.get("SCFUZZBENCH_DIFFCOV_MAX_WORK_ITEMS")
+    if raw is None or raw == "":
+        return DEFAULT_SHOWMAP_MAX_WORK_ITEMS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SHOWMAP_MAX_WORK_ITEMS
+    return max(value, 0)
+
+
 def write_differential_coverage_outputs(
     logs_dir: Path,
     out_dir: Path,
     excluded_fuzzers: Optional[Set[str]] = None,
+    max_work_items: Optional[int] = None,
 ) -> None:
     trials, skipped = load_showmap_trials(logs_dir, excluded_fuzzers)
     campaigns = build_showmap_campaigns(trials)
@@ -1770,14 +1795,27 @@ def write_differential_coverage_outputs(
         "skipped": skipped,
         "campaigns": {},
     }
+    if max_work_items is None:
+        max_work_items = showmap_max_work_items_from_env()
+    manifest["max_work_items"] = max_work_items
 
     for campaign_name, campaign in sorted(campaigns.items()):
         if not campaign:
             continue
+        start = time.perf_counter()
         campaign_dir = campaign_root / campaign_name
         write_showmap_campaign_dir(campaign, campaign_dir)
         summary = showmap_campaign_summary(campaign)
-        manifest["campaigns"][campaign_name] = summary
+        work_items = showmap_campaign_work_items(campaign)
+        manifest["campaigns"][campaign_name] = {
+            "approaches": summary,
+            "work_items": work_items,
+        }
+        if campaign_name != "combined" and max_work_items and work_items > max_work_items:
+            manifest["campaigns"][campaign_name]["skipped_analysis"] = (
+                f"work_items {work_items} exceeds max_work_items {max_work_items}"
+            )
+            continue
         relscores = calculate_relscores(campaign)
         for approach, score in sorted(
             relscores.items(), key=lambda item: (-item[1], item[0])
@@ -1795,6 +1833,9 @@ def write_differential_coverage_outputs(
         for approach, references in sorted(relcovs.items()):
             for reference, relcov in sorted(references.items()):
                 relcov_rows.append((campaign_name, approach, reference, relcov))
+        manifest["campaigns"][campaign_name]["analysis_seconds"] = round(
+            time.perf_counter() - start, 6
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     relscore_csv = out_dir / "differential_coverage_relscores.csv"
