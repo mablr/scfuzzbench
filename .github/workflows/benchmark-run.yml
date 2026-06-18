@@ -46,7 +46,7 @@ on:
       foundry_git_ref:
         description: "Optional Foundry git ref (branch/tag/commit)."
         required: false
-        default: "0e526570be2a832ffcfb52f489788cd5751cb130"
+        default: "master"
       echidna_version:
         description: "Override Echidna version (optional)."
         required: false
@@ -125,7 +125,7 @@ on:
         description: "Optional Foundry git ref (branch/tag/commit)."
         required: false
         type: string
-        default: "0e526570be2a832ffcfb52f489788cd5751cb130"
+        default: "master"
       echidna_version:
         description: "Override Echidna version (optional)."
         required: false

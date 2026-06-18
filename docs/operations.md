@@ -36,7 +36,7 @@ export TF_VAR_instances_per_fuzzer=4
 export TF_VAR_fuzzers='["echidna","medusa","foundry","recon-fuzzer"]'
 export TF_VAR_git_token_ssm_parameter_name="/scfuzzbench/recon/github_token"
 export TF_VAR_foundry_git_repo="https://github.com/foundry-rs/foundry"
-export TF_VAR_foundry_git_ref="0e526570be2a832ffcfb52f489788cd5751cb130"
+export TF_VAR_foundry_git_ref="master"
 ```
 
 For Foundry runs, use an upstream Foundry commit that includes
