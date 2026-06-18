@@ -520,7 +520,11 @@ def extract_foundry_failure_totals(payload: Dict[str, Any]) -> Tuple[Optional[fl
         return ts_value, None, None
 
     unique_failures = parse_optional_float(metrics.get("unique_failures"))
-    broken_handlers = parse_optional_float(metrics.get("broken_handlers"))
+    if unique_failures is None:
+        unique_failures = parse_optional_float(metrics.get("broken_invariants"))
+    broken_handlers = parse_optional_float(metrics.get("broken_assertions"))
+    if broken_handlers is None:
+        broken_handlers = parse_optional_float(metrics.get("broken_handlers"))
     return (
         ts_value,
         None if unique_failures is None else int(unique_failures),
