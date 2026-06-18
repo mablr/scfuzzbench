@@ -1754,6 +1754,78 @@ def calculate_relcovs(
     }
 
 
+def find_baseline_candidate(approaches: Iterable[str]) -> Optional[Tuple[str, str]]:
+    approaches = sorted(approaches)
+    if len(approaches) != 2:
+        return None
+
+    baseline_names = {"master", "main", "stable"}
+
+    def is_baseline(name: str) -> bool:
+        lower = name.lower()
+        return lower in baseline_names or lower.endswith("-master") or lower.endswith("-main")
+
+    baselines = [approach for approach in approaches if is_baseline(approach)]
+    if len(baselines) != 1:
+        return None
+
+    baseline = baselines[0]
+    candidate = next(approach for approach in approaches if approach != baseline)
+    return baseline, candidate
+
+
+def differential_coverage_verdict(
+    candidate_covers_baseline: float,
+    candidate_relscore: float,
+    baseline_relscore: float,
+) -> str:
+    if candidate_covers_baseline < 0.95 or candidate_relscore < 0.98 * baseline_relscore:
+        return "regression"
+    if candidate_covers_baseline >= 0.98 and candidate_relscore >= baseline_relscore:
+        return "improvement"
+    if 0.95 <= candidate_covers_baseline < 0.98 and candidate_relscore > baseline_relscore:
+        return "mixed-results"
+    return "inconclusive"
+
+
+def build_differential_coverage_summary_rows(
+    campaign_name: str,
+    relscores: Dict[str, float],
+    relcovs: Dict[str, Dict[str, float]],
+) -> List[Tuple[str, str, str, str, float, float, float, float, float]]:
+    pair = find_baseline_candidate(relcovs.keys())
+    if pair is None:
+        return []
+    baseline, candidate = pair
+    if baseline not in relscores or candidate not in relscores:
+        return []
+
+    candidate_covers_baseline = relcovs.get(candidate, {}).get(baseline)
+    baseline_covers_candidate = relcovs.get(baseline, {}).get(candidate)
+    if candidate_covers_baseline is None or baseline_covers_candidate is None:
+        return []
+
+    baseline_relscore = relscores[baseline]
+    candidate_relscore = relscores[candidate]
+    verdict = differential_coverage_verdict(
+        candidate_covers_baseline, candidate_relscore, baseline_relscore
+    )
+    relscore_ratio = candidate_relscore / baseline_relscore if baseline_relscore else 0.0
+    return [
+        (
+            campaign_name,
+            baseline,
+            candidate,
+            verdict,
+            candidate_covers_baseline,
+            baseline_covers_candidate,
+            baseline_relscore,
+            candidate_relscore,
+            relscore_ratio,
+        )
+    ]
+
+
 def showmap_campaign_summary(
     campaign: Dict[str, Dict[str, Set[str]]],
 ) -> Dict[str, Dict[str, int]]:
@@ -1794,6 +1866,7 @@ def write_differential_coverage_outputs(
 
     relscore_rows: List[Tuple[str, str, float, int, int]] = []
     relcov_rows: List[Tuple[str, str, str, float]] = []
+    summary_rows: List[Tuple[str, str, str, str, float, float, float, float, float]] = []
     manifest: Dict[str, Any] = {
         "raw_trials": len(trials),
         "skipped": skipped,
@@ -1836,7 +1909,12 @@ def write_differential_coverage_outputs(
         relcovs = calculate_relcovs(campaign)
         for approach, references in sorted(relcovs.items()):
             for reference, relcov in sorted(references.items()):
+                if approach == reference:
+                    continue
                 relcov_rows.append((campaign_name, approach, reference, relcov))
+        summary_rows.extend(
+            build_differential_coverage_summary_rows(campaign_name, relscores, relcovs)
+        )
         manifest["campaigns"][campaign_name]["analysis_seconds"] = round(
             time.perf_counter() - start, 6
         )
@@ -1857,6 +1935,48 @@ def write_differential_coverage_outputs(
         writer.writerow(["campaign", "approach", "reference_approach", "relcov"])
         for campaign_name, approach, reference, relcov in relcov_rows:
             writer.writerow([campaign_name, approach, reference, f"{relcov:.6f}"])
+
+    summary_csv = out_dir / "differential_coverage_summary.csv"
+    with summary_csv.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "campaign",
+                "baseline",
+                "candidate",
+                "verdict",
+                "candidate_covers_baseline",
+                "baseline_covers_candidate",
+                "baseline_relscore",
+                "candidate_relscore",
+                "relscore_ratio",
+            ]
+        )
+        for row in summary_rows:
+            (
+                campaign_name,
+                baseline,
+                candidate,
+                verdict,
+                candidate_covers_baseline,
+                baseline_covers_candidate,
+                baseline_relscore,
+                candidate_relscore,
+                relscore_ratio,
+            ) = row
+            writer.writerow(
+                [
+                    campaign_name,
+                    baseline,
+                    candidate,
+                    verdict,
+                    f"{candidate_covers_baseline:.6f}",
+                    f"{baseline_covers_candidate:.6f}",
+                    f"{baseline_relscore:.6f}",
+                    f"{candidate_relscore:.6f}",
+                    f"{relscore_ratio:.6f}",
+                ]
+            )
 
     manifest_path = out_dir / "showmap_campaign_manifest.json"
     with manifest_path.open("w", encoding="utf-8") as handle:

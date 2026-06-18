@@ -143,8 +143,9 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `throughput_summary.csv` (per-fuzzer tx/s and gas/s distribution summary)
   - `progress_metrics_samples.csv` (raw fuzzer-native progress metrics such as seq/s, coverage proxy, corpus size, favored items, failure rate when available)
   - `progress_metrics_summary.csv` (per-fuzzer distribution summary of those progress metrics)
+  - `differential_coverage_summary.csv` (human-readable baseline/candidate verdicts computed from relcov and relscore)
   - `differential_coverage_relscores.csv` (relscore values computed from normalized AFL showmap campaigns)
-  - `differential_coverage_relcov.csv` (pairwise relcov values computed from normalized AFL showmap campaigns)
+  - `differential_coverage_relcov.csv` (pairwise non-self relcov values computed from normalized AFL showmap campaigns)
   - `showmap_campaign_manifest.json` (raw showmap inputs, skipped inputs, and normalized campaign summaries)
   - `showmap_campaigns/` (canonical `approach/trial.txt` campaign directories used for relscore scoring)
 
@@ -157,6 +158,11 @@ Optional controls include `EXCLUDE_FUZZERS`, `REPORT_BUDGET`, `REPORT_GRID_STEP_
   - `showmap_campaigns/combined/<approach>/<trial>.txt` unions all showmap files for each trial.
   - `showmap_campaigns/by_test/<suite-test>/<approach>/<trial>.txt` preserves per-test drill-down campaigns.
 - Relscore and relcov are computed through the `differential-coverage` package from normalized AFL showmap campaign directories. Only positive AFL showmap counts are treated as covered edges.
+- When a campaign has one baseline approach (`master`, `main`, `stable`, or a `*-master`/`*-main` label) and one candidate approach, `differential_coverage_summary.csv` records a verdict:
+  - `improvement`: `relcov(candidate, baseline) >= 0.98` and `relscore(candidate) >= relscore(baseline)`
+  - `mixed-results`: `0.95 <= relcov(candidate, baseline) < 0.98` and `relscore(candidate) > relscore(baseline)`
+  - `regression`: `relcov(candidate, baseline) < 0.95` or `relscore(candidate) < 0.98 * relscore(baseline)`
+  - `inconclusive`: none of the above matched.
 - `SCFUZZBENCH_FOUNDRY_SHOWMAP=0` disables Foundry showmap collection. `FOUNDRY_SHOWMAP_DOMAIN`, `FOUNDRY_SHOWMAP_CORPUS_DIR`, and `SCFUZZBENCH_FOUNDRY_SHOWMAP_TIMEOUT_SECONDS` tune replay behavior. When no corpus override is set, showmap replay lets `forge` resolve the corpus directories from the target's Foundry config. Replay timeout defaults to the smaller of the campaign timeout and 1800 seconds so showmap collection stays within the benchmark completion grace window unless explicitly overridden.
 
 ### Cumulative conversion (`analysis/events_to_cumulative.py`)

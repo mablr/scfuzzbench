@@ -71,12 +71,24 @@ class DifferentialCoverageTests(unittest.TestCase):
                 (row["campaign"], row["approach"], row["reference_approach"]): row["relcov"]
                 for row in relcov_rows
             }
+            self.assertNotIn(("combined", "foundry-master", "foundry-master"), relcovs)
             self.assertEqual(
                 relcovs[("combined", "foundry-master", "foundry-candidate")],
                 "1.000000",
             )
             self.assertEqual(
                 relcovs[("combined", "foundry-candidate", "foundry-master")],
+                "0.500000",
+            )
+            with (out_dir / "differential_coverage_summary.csv").open(newline="") as handle:
+                summary_rows = list(csv.DictReader(handle))
+            summary = {(row["campaign"], row["candidate"]): row for row in summary_rows}
+            self.assertEqual(
+                summary[("combined", "foundry-candidate")]["verdict"],
+                "regression",
+            )
+            self.assertEqual(
+                summary[("combined", "foundry-candidate")]["candidate_covers_baseline"],
                 "0.500000",
             )
 
@@ -113,10 +125,7 @@ class DifferentialCoverageTests(unittest.TestCase):
             self.assertEqual(rows[0]["relscore"], "0.000000")
             with (out_dir / "differential_coverage_relcov.csv").open(newline="") as handle:
                 relcov_rows = list(csv.DictReader(handle))
-            self.assertEqual(len(relcov_rows), 1)
-            self.assertEqual(relcov_rows[0]["approach"], "foundry-master")
-            self.assertEqual(relcov_rows[0]["reference_approach"], "foundry-master")
-            self.assertEqual(relcov_rows[0]["relcov"], "1.000000")
+            self.assertEqual(relcov_rows, [])
             self.assertTrue(
                 (out_dir / "showmap_campaigns" / "combined" / "foundry-master").is_dir()
             )
@@ -316,6 +325,59 @@ class DifferentialCoverageTests(unittest.TestCase):
                 relcovs[("combined", "foundry-candidate", "foundry-master")],
                 "0.333333",
             )
+
+    def test_writes_human_summary_for_master_pr_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            showmap_root = root / "logs"
+            master_showmap = showmap_root / "i-aaa-master" / "showmap" / "master__Suite"
+            pr_showmap = showmap_root / "i-bbb-pr-15206" / "showmap" / "pr-15206__Suite"
+            master_showmap.mkdir(parents=True)
+            pr_showmap.mkdir(parents=True)
+            (master_showmap / "trial-1.txt").write_text(
+                "a:1\nb:1\nc:1\nd:1\n", encoding="utf-8"
+            )
+            (pr_showmap / "trial-1.txt").write_text(
+                "a:1\nb:1\nc:1\ne:1\n", encoding="utf-8"
+            )
+
+            out_dir = root / "out"
+            analyze.write_differential_coverage_outputs(root / "logs", out_dir)
+
+            with (out_dir / "differential_coverage_relcov.csv").open(newline="") as handle:
+                relcov_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(relcov_rows), 4)
+            self.assertFalse(
+                any(row["approach"] == row["reference_approach"] for row in relcov_rows)
+            )
+
+            with (out_dir / "differential_coverage_summary.csv").open(newline="") as handle:
+                summary_rows = list(csv.DictReader(handle))
+
+            combined = next(row for row in summary_rows if row["campaign"] == "combined")
+            self.assertEqual(combined["baseline"], "master")
+            self.assertEqual(combined["candidate"], "pr-15206")
+            self.assertEqual(combined["verdict"], "regression")
+            self.assertEqual(combined["candidate_covers_baseline"], "0.750000")
+            self.assertEqual(combined["baseline_covers_candidate"], "0.750000")
+
+    def test_differential_coverage_verdict_thresholds(self):
+        self.assertEqual(
+            analyze.differential_coverage_verdict(0.99, 10.0, 10.0),
+            "improvement",
+        )
+        self.assertEqual(
+            analyze.differential_coverage_verdict(0.96, 11.0, 10.0),
+            "mixed-results",
+        )
+        self.assertEqual(
+            analyze.differential_coverage_verdict(0.94, 20.0, 10.0),
+            "regression",
+        )
+        self.assertEqual(
+            analyze.differential_coverage_verdict(0.99, 9.7, 10.0),
+            "regression",
+        )
 
     def test_combined_is_not_a_suite_name_sentinel(self):
         with tempfile.TemporaryDirectory() as tmp:
