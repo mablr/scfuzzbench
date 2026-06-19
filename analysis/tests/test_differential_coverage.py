@@ -1,10 +1,82 @@
 import csv
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
 
 from analysis import analyze
+
+try:
+    # Optional: only used to cross-check the local implementation against the reference.
+    # analyze.py no longer depends on this package at runtime.
+    from differential_coverage import DifferentialCoverage
+except ImportError:
+    DifferentialCoverage = None
+
+
+@unittest.skipUnless(
+    DifferentialCoverage is not None, "differential_coverage not installed"
+)
+class RelscoreParityTests(unittest.TestCase):
+    """The local linear calculate_relscores/relcovs must match the upstream library."""
+
+    @staticmethod
+    def _random_campaign(rng):
+        edge_universe = [f"e{i}" for i in range(rng.randint(1, 40))]
+        campaign = {}
+        for a in range(rng.randint(1, 5)):
+            trials = {}
+            for t in range(rng.randint(1, 6)):
+                k = rng.randint(1, len(edge_universe))
+                trials[f"t{t}"] = set(rng.sample(edge_universe, k))  # always non-empty
+            campaign[f"approach{a}"] = trials
+        return campaign
+
+    def _assert_relscore_parity(self, campaign):
+        assert DifferentialCoverage is not None  # guaranteed by skipUnless
+        expected = dict(DifferentialCoverage(campaign).relscores())
+        actual = analyze.calculate_relscores(campaign)
+        self.assertEqual(set(expected), set(actual))
+        for approach in expected:
+            self.assertAlmostEqual(expected[approach], actual[approach], places=9)
+
+    def _assert_relcov_parity(self, campaign):
+        assert DifferentialCoverage is not None  # guaranteed by skipUnless
+        dc = DifferentialCoverage(campaign)
+        expected = {
+            a: {r: dc.approaches[a].relcov(dc.approaches[r]) for r in dc.approaches}
+            for a in dc.approaches
+        }
+        actual = analyze.calculate_relcovs(campaign)
+        self.assertEqual(set(expected), set(actual))
+        for a in expected:
+            self.assertEqual(set(expected[a]), set(actual[a]))
+            for r in expected[a]:
+                self.assertAlmostEqual(expected[a][r], actual[a][r], places=9)
+
+    def test_matches_library_on_random_campaigns(self):
+        rng = random.Random(1234)
+        for _ in range(500):
+            campaign = self._random_campaign(rng)
+            self._assert_relscore_parity(campaign)
+            self._assert_relcov_parity(campaign)
+
+    def test_matches_library_on_hand_picked_cases(self):
+        cases = [
+            # single approach -> every relscore is 0
+            {"only": {"t1": {"a", "b"}}},
+            # disjoint coverage
+            {"x": {"t1": {"a"}}, "y": {"t1": {"b"}}},
+            # multiple trials with partial overlap
+            {
+                "x": {"t1": {"a", "b"}, "t2": {"b", "c"}},
+                "y": {"t1": {"a"}, "t2": {"a", "c"}, "t3": {"d"}},
+            },
+        ]
+        for campaign in cases:
+            self._assert_relscore_parity(campaign)
+            self._assert_relcov_parity(campaign)
 
 
 class DifferentialCoverageTests(unittest.TestCase):

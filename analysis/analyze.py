@@ -9,13 +9,12 @@ import shutil
 import statistics
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from differential_coverage import DifferentialCoverage
 
 @dataclass(frozen=True)
 class LogFile:
@@ -1738,19 +1737,77 @@ def showmap_campaign_work_items(campaign: Dict[str, Dict[str, Set[str]]]) -> int
 def calculate_relscores(
     campaign: Dict[str, Dict[str, Set[str]]],
 ) -> Dict[str, float]:
-    return dict(DifferentialCoverage(campaign).relscores())
+    # Score how distinctive each approach's coverage is. An edge is worth more when
+    # fewer approaches reach it at all, weighted by how consistently this approach hits it:
+    #   relscore[a] = sum_e (# approaches whose union omits e) * (# a's trials hitting e)
+    #                 / (# a's non-empty trials)
+    # Computed in a single pass over each approach's trials. Edges a never hits contribute
+    # 0, so we only sum the ones it did hit.
+    approach_count = len(campaign)
+
+    non_empty_trials: Dict[str, int] = {}
+    union_by_approach: Dict[str, Set[str]] = {}
+    hits_by_approach: Dict[str, "Counter[str]"] = {}
+    for approach, trials in campaign.items():
+        union: Set[str] = set()
+        hits: "Counter[str]" = Counter()
+        denom = 0
+        for edges in trials.values():
+            if not edges:
+                continue
+            denom += 1
+            union.update(edges)
+            hits.update(edges)
+        non_empty_trials[approach] = denom
+        union_by_approach[approach] = union
+        hits_by_approach[approach] = hits
+
+    # For each edge, how many approaches' unions contain it.
+    approaches_hitting_edge: "Counter[str]" = Counter()
+    for union in union_by_approach.values():
+        approaches_hitting_edge.update(union)
+
+    scores: Dict[str, float] = {}
+    for approach in campaign:
+        denom = non_empty_trials[approach]
+        if denom == 0:
+            scores[approach] = 0.0
+            continue
+        numerator = sum(
+            (approach_count - approaches_hitting_edge[edge]) * trial_hits
+            for edge, trial_hits in hits_by_approach[approach].items()
+        )
+        scores[approach] = numerator / denom
+    return scores
 
 
 def calculate_relcovs(
     campaign: Dict[str, Dict[str, Set[str]]],
 ) -> Dict[str, Dict[str, float]]:
-    dc = DifferentialCoverage(campaign)
+    # For each (approach a, reference ref), how much of ref's total coverage a's trials
+    # typically reproduce:
+    #   relcov(a, ref) = median over a's trials of |trial & ref.union| / |ref.union|
+    trials_by_approach: Dict[str, List[Set[str]]] = {
+        approach: list(trials.values()) for approach, trials in campaign.items()
+    }
+    union_by_approach: Dict[str, Set[str]] = {
+        approach: set().union(*trials) if trials else set()
+        for approach, trials in trials_by_approach.items()
+    }
     return {
         approach: {
-            reference: dc.approaches[approach].relcov(dc.approaches[reference])
-            for reference in dc.approaches
+            reference: (
+                statistics.median(
+                    len(trial & union_by_approach[reference])
+                    / len(union_by_approach[reference])
+                    for trial in trials_by_approach[approach]
+                )
+                if union_by_approach[reference]
+                else 0.0
+            )
+            for reference in campaign
         }
-        for approach in dc.approaches
+        for approach in campaign
     }
 
 
