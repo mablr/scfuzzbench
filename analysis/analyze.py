@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import random
 import re
 import shutil
 import statistics
@@ -14,6 +15,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+from scipy import stats
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,12 @@ TEXT_GAS_COUNT_PATTERNS = [
 ]
 
 DEFAULT_SHOWMAP_MAX_WORK_ITEMS = 50_000_000
+DEFAULT_MIN_VERDICT_SAMPLES = 6
+DEFAULT_AUTOTUNE_VALIDATION = "leave-one-target-out"
+DEFAULT_AUTOTUNE_RELCOV_FLOOR = 0.98
+DEFAULT_AUTOTUNE_TARGET_RELCOV_FLOOR = 0.95
+A12_MEANINGFUL_HIGH = 0.56
+A12_MEANINGFUL_LOW = 0.44
 
 TX_RATE_KEYS = (
     "tx_per_second",
@@ -194,6 +203,8 @@ class ShowmapTrial:
     instance_label: str
     instance_id: str
     fuzzer_label: str
+    target_label: Optional[str]
+    seed_label: Optional[str]
     approach: str
     suite_test: Optional[str]
     trial_id: str
@@ -447,14 +458,14 @@ def extract_bang_event(line: str) -> Optional[str]:
     if "!!!" not in line:
         return None
     _, after = line.split("!!!", 1)
-    candidate = after.strip()
+    feature = after.strip()
     for sep in ("»", "\"", ")"):
-        if sep in candidate:
-            candidate = candidate.split(sep, 1)[0].strip()
-    candidate = candidate.strip()
-    if not candidate:
+        if sep in feature:
+            feature = feature.split(sep, 1)[0].strip()
+    feature = feature.strip()
+    if not feature:
         return None
-    return candidate
+    return feature
 
 
 def normalize_foundry_failure_name(value: Any) -> Optional[str]:
@@ -1603,6 +1614,25 @@ def parse_showmap_approach_dir(name: str) -> Tuple[str, Optional[str]]:
     return name, None
 
 
+def parse_showmap_instance_label(
+    instance_label: str,
+) -> Tuple[str, str, Optional[str], Optional[str]]:
+    marker = re.search(r"__(?:target|seed)-", instance_label)
+    base_label = instance_label[: marker.start()] if marker else instance_label
+    target_label = None
+    seed_label = None
+
+    if marker:
+        for part in instance_label[marker.start() + 2 :].split("__"):
+            if part.startswith("target-"):
+                target_label = sanitize_showmap_component(part.removeprefix("target-"))
+            elif part.startswith("seed-"):
+                seed_label = sanitize_showmap_component(part.removeprefix("seed-"))
+
+    instance_id, fuzzer_label = split_instance_label(base_label)
+    return instance_id, fuzzer_label, target_label, seed_label
+
+
 def read_afl_showmap(path: Path) -> Set[str]:
     edges: Set[str] = set()
     for line_number, raw_line in enumerate(
@@ -1636,7 +1666,9 @@ def load_showmap_trials(
         if not rel_showmap_dir.parts:
             continue
         instance_label = rel_showmap_dir.parts[0]
-        instance_id, fuzzer_label = split_instance_label(instance_label)
+        instance_id, fuzzer_label, target_label, seed_label = parse_showmap_instance_label(
+            instance_label
+        )
 
         for trial_file in sorted(showmap_dir.rglob("*.txt")):
             rel_trial = trial_file.relative_to(showmap_dir)
@@ -1664,12 +1696,18 @@ def load_showmap_trials(
 
             trial_rel = Path(*rel_trial.parts[1:]).with_suffix("")
             trial_name = "__".join(trial_rel.parts)
-            trial_id = sanitize_showmap_component(f"{instance_label}__{trial_name}")
+            trial_id = (
+                sanitize_showmap_component(f"seed-{seed_label}")
+                if seed_label is not None
+                else sanitize_showmap_component(f"{instance_label}__{trial_name}")
+            )
             trials.append(
                 ShowmapTrial(
                     instance_label=instance_label,
                     instance_id=instance_id,
                     fuzzer_label=fuzzer_label,
+                    target_label=target_label,
+                    seed_label=seed_label,
                     approach=sanitize_showmap_component(approach),
                     suite_test=(
                         sanitize_showmap_component(suite_test)
@@ -1699,6 +1737,14 @@ def build_showmap_campaigns(
     campaigns: Dict[str, Dict[str, Dict[str, Set[str]]]] = {"combined": {}}
     for trial in trials:
         merge_edges(campaigns["combined"], trial.approach, trial.trial_id, trial.edges)
+        if trial.target_label is not None:
+            target_campaign = f"by_target/{trial.target_label}"
+            merge_edges(
+                campaigns.setdefault(target_campaign, {}),
+                trial.approach,
+                trial.trial_id,
+                trial.edges,
+            )
         if trial.suite_test is not None:
             campaign_name = f"by_test/{trial.suite_test}"
             merge_edges(
@@ -1707,6 +1753,14 @@ def build_showmap_campaigns(
                 trial.trial_id,
                 trial.edges,
             )
+            if trial.target_label is not None:
+                target_test_campaign = f"by_target/{trial.target_label}/by_test/{trial.suite_test}"
+                merge_edges(
+                    campaigns.setdefault(target_test_campaign, {}),
+                    trial.approach,
+                    trial.trial_id,
+                    trial.edges,
+                )
     return campaigns
 
 
@@ -1811,7 +1865,7 @@ def calculate_relcovs(
     }
 
 
-def find_baseline_candidate(approaches: Iterable[str]) -> Optional[Tuple[str, str]]:
+def find_baseline_feature(approaches: Iterable[str]) -> Optional[Tuple[str, str]]:
     approaches = sorted(approaches)
     if len(approaches) != 2:
         return None
@@ -1827,22 +1881,490 @@ def find_baseline_candidate(approaches: Iterable[str]) -> Optional[Tuple[str, st
         return None
 
     baseline = baselines[0]
-    candidate = next(approach for approach in approaches if approach != baseline)
-    return baseline, candidate
+    feature = next(approach for approach in approaches if approach != baseline)
+    return baseline, feature
 
 
 def differential_coverage_verdict(
-    candidate_covers_baseline: float,
-    candidate_relscore: float,
+    feature_covers_baseline: float,
+    feature_relscore: float,
     baseline_relscore: float,
 ) -> str:
-    if candidate_covers_baseline < 0.95 or candidate_relscore < 0.98 * baseline_relscore:
+    if feature_covers_baseline < 0.95 or feature_relscore < 0.98 * baseline_relscore:
         return "regression"
-    if candidate_covers_baseline >= 0.98 and candidate_relscore >= baseline_relscore:
+    if feature_covers_baseline >= 0.98 and feature_relscore >= baseline_relscore:
         return "improvement"
-    if 0.95 <= candidate_covers_baseline < 0.98 and candidate_relscore > baseline_relscore:
-        return "mixed-results"
+    if 0.95 <= feature_covers_baseline < 0.98 and feature_relscore > baseline_relscore:
+        return "needs-review"
     return "inconclusive"
+
+
+def _mean(values: Sequence[float]) -> float:
+    return statistics.mean(values) if values else 0.0
+
+
+def _sample_variance(values: Sequence[float]) -> float:
+    return statistics.variance(values) if len(values) >= 2 else 0.0
+
+
+def _percentile(sorted_values: Sequence[float], q: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    pos = min(max(q, 0.0), 1.0) * (len(sorted_values) - 1)
+    lower = math.floor(pos)
+    upper = math.ceil(pos)
+    if lower == upper:
+        return sorted_values[int(pos)]
+    weight = pos - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _bca_mean_ci(
+    values: Sequence[float],
+    confidence_level: float,
+    min_samples: int,
+    iterations: int = 2000,
+) -> Tuple[Optional[float], Optional[float], str]:
+    finite_values = [float(value) for value in values if math.isfinite(float(value))]
+    if len(finite_values) < min_samples:
+        return None, None, "insufficient n"
+    theta_hat = _mean(finite_values)
+    if len(set(finite_values)) == 1:
+        return theta_hat, theta_hat, "ok"
+
+    rng = random.Random(8675309)
+    n = len(finite_values)
+    boot = sorted(
+        _mean([finite_values[rng.randrange(n)] for _ in range(n)])
+        for _ in range(iterations)
+    )
+
+    less = sum(1 for value in boot if value < theta_hat)
+    equal = sum(1 for value in boot if value == theta_hat)
+    prop_less = min(max((less + 0.5 * equal) / iterations, 1e-9), 1.0 - 1e-9)
+    z0 = float(stats.norm.ppf(prop_less))
+
+    jack = [
+        _mean([value for idx, value in enumerate(finite_values) if idx != leave_out])
+        for leave_out in range(n)
+    ]
+    jack_mean = _mean(jack)
+    numerator = sum((jack_mean - value) ** 3 for value in jack)
+    denominator = 6.0 * (
+        sum((jack_mean - value) ** 2 for value in jack) ** 1.5
+    )
+    acceleration = numerator / denominator if denominator else 0.0
+
+    alpha = (1.0 - confidence_level) / 2.0
+
+    def adjusted_quantile(raw_alpha: float) -> float:
+        z_alpha = float(stats.norm.ppf(raw_alpha))
+        denom = 1.0 - acceleration * (z0 + z_alpha)
+        if denom == 0.0:
+            return raw_alpha
+        return float(stats.norm.cdf(z0 + (z0 + z_alpha) / denom))
+
+    low_q = adjusted_quantile(alpha)
+    high_q = adjusted_quantile(1.0 - alpha)
+    return _percentile(boot, low_q), _percentile(boot, high_q), "ok"
+
+
+def _a12(xs: Sequence[float], ys: Sequence[float]) -> float:
+    if not xs or not ys:
+        return 0.5
+    wins = 0.0
+    for x in xs:
+        for y in ys:
+            if x > y:
+                wins += 1.0
+            elif x == y:
+                wins += 0.5
+    return wins / (len(xs) * len(ys))
+
+
+def _mann_whitney_u(xs: Sequence[float], ys: Sequence[float]) -> Tuple[float, float]:
+    if not xs or not ys:
+        return 0.0, 1.0
+    if _mean(xs) > _mean(ys):
+        alternative = "greater"
+    elif _mean(xs) < _mean(ys):
+        alternative = "less"
+    else:
+        return 0.0, 1.0
+    result = stats.mannwhitneyu(xs, ys, alternative=alternative, method="auto")
+    return float(result.statistic), float(result.pvalue)
+
+
+def _wilcoxon_signed_rank(xs: Sequence[float], ys: Sequence[float]) -> Tuple[float, float]:
+    if not xs or not ys:
+        return 0.0, 1.0
+    pairs = [(x, y) for x, y in zip(xs, ys) if x != y]
+    if not pairs:
+        return 0.0, 1.0
+    x_values = [x for x, _ in pairs]
+    y_values = [y for _, y in pairs]
+    if _mean(x_values) > _mean(y_values):
+        alternative = "greater"
+    elif _mean(x_values) < _mean(y_values):
+        alternative = "less"
+    else:
+        return 0.0, 1.0
+    result = stats.wilcoxon(
+        x_values,
+        y_values,
+        alternative=alternative,
+        zero_method="wilcox",
+        method="auto",
+    )
+    return float(result.statistic), float(result.pvalue)
+
+
+def _holm_adjust(p_values: Sequence[float]) -> List[float]:
+    indexed = sorted(enumerate(p_values), key=lambda item: item[1])
+    adjusted = [1.0] * len(p_values)
+    running = 0.0
+    m = len(p_values)
+    for rank, (idx, p_value) in enumerate(indexed):
+        running = max(running, min(1.0, (m - rank) * p_value))
+        adjusted[idx] = running
+    return adjusted
+
+
+def _is_target_family_campaign(campaign_name: str) -> bool:
+    return campaign_name.startswith("by_target/") and "/by_test/" not in campaign_name
+
+
+def per_sample_relscores(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, Dict[str, float]]:
+    approach_count = len(campaign)
+    union_by_approach = {
+        approach: set().union(*trials.values()) if trials else set()
+        for approach, trials in campaign.items()
+    }
+    approaches_hitting_edge: "Counter[str]" = Counter()
+    for union in union_by_approach.values():
+        approaches_hitting_edge.update(union)
+    scores: Dict[str, Dict[str, float]] = {}
+    for approach, trials in campaign.items():
+        scores[approach] = {
+            trial_id: float(
+                sum(approach_count - approaches_hitting_edge[edge] for edge in edges)
+            )
+            for trial_id, edges in trials.items()
+        }
+    return scores
+
+
+def trial_scores(
+    campaign: Dict[str, Dict[str, Set[str]]],
+) -> Dict[str, Dict[str, float]]:
+    return per_sample_relscores(campaign)
+
+
+def _relcov_samples(
+    campaign: Dict[str, Dict[str, Set[str]]],
+    approach: str,
+    reference: str,
+    sample_ids: Optional[Sequence[str]] = None,
+) -> List[float]:
+    reference_union = set().union(*campaign.get(reference, {}).values())
+    if not reference_union:
+        return []
+    trials = campaign.get(approach, {})
+    ids = list(sample_ids) if sample_ids is not None else list(trials.keys())
+    return [
+        len(trials[trial_id] & reference_union) / len(reference_union)
+        for trial_id in ids
+        if trial_id in trials
+    ]
+
+
+def _ratio_samples(
+    feature_scores_by_sample: Dict[str, float],
+    baseline_scores_by_sample: Dict[str, float],
+    sample_ids: Sequence[str],
+) -> Tuple[List[float], str]:
+    ratios = [
+        feature_scores_by_sample[sample_id] / baseline_scores_by_sample[sample_id]
+        for sample_id in sample_ids
+        if sample_id in feature_scores_by_sample
+        and sample_id in baseline_scores_by_sample
+        and baseline_scores_by_sample[sample_id] > 0.0
+    ]
+    if ratios:
+        return ratios, "ok"
+    return [], "undefined (zero baseline relscore)"
+
+
+def _statistical_verdict(row: Dict[str, Any], confidence_level: float, relcov_floor: float) -> str:
+    if row["too_few_samples"]:
+        return "inconclusive"
+    if row["pairing_mode"] == "paired" and not row["paired"]:
+        return "inconclusive"
+    if row["covers_baseline_ci_status"] != "ok":
+        return "inconclusive"
+
+    alpha = 1.0 - confidence_level
+    p_adjusted = float(row["p_value_adjusted"])
+    feature_mean = float(row["feature_sample_mean"])
+    baseline_mean = float(row["baseline_sample_mean"])
+    a12 = float(row["effect_size_a12"])
+    relcov_low = row["covers_baseline_ci_low"]
+    relcov_high = row["covers_baseline_ci_high"]
+
+    significant = p_adjusted <= alpha
+    relscore_up = significant and feature_mean > baseline_mean and a12 >= A12_MEANINGFUL_HIGH
+    relscore_down = significant and feature_mean < baseline_mean and a12 <= A12_MEANINGFUL_LOW
+    relcov_failed = relcov_high is not None and relcov_high < relcov_floor
+    relcov_held = relcov_low is not None and relcov_low >= relcov_floor
+
+    if relscore_down or relcov_failed:
+        return "regression"
+    if relscore_up and relcov_held:
+        return "improvement"
+    if relscore_up and not relcov_held:
+        return "needs-review"
+    return "inconclusive"
+
+
+def _verdict_reason(row: Dict[str, Any], relcov_floor: float) -> str:
+    if row["pairing_mode"] == "paired" and not row["paired"]:
+        return "paired mode requires matched seed labels; unpaired fallback disabled"
+    if row["too_few_samples"]:
+        return "too few runs"
+    if row["covers_baseline_ci_status"] != "ok":
+        return row["covers_baseline_ci_status"]
+    verdict = row["verdict"]
+    if verdict == "improvement":
+        return "significant relscore improvement and relcov floor held"
+    if verdict == "regression":
+        if row["covers_baseline_ci_high"] is not None and row["covers_baseline_ci_high"] < relcov_floor:
+            return "relcov confidence interval below floor"
+        return "significant relscore regression"
+    if verdict == "needs-review":
+        return "significant relscore improvement with relcov uncertainty or coverage shift"
+    return "not significant after correction"
+
+
+def build_differential_coverage_verdict_rows(
+    summary_rows: List[Tuple[str, str, str, str, float, float, float, float, float]],
+    campaigns: Dict[str, Dict[str, Dict[str, Set[str]]]],
+    confidence_level: float = 0.95,
+    relcov_floor: float = 0.95,
+    pairing_mode: str = "unpaired",
+    min_samples: int = DEFAULT_MIN_VERDICT_SAMPLES,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if pairing_mode not in {"unpaired", "paired"}:
+        raise ValueError(f"unsupported differential coverage pairing mode: {pairing_mode}")
+    rows: List[Dict[str, Any]] = []
+    for (
+        campaign_name,
+        baseline,
+        feature,
+        legacy_verdict,
+        feature_covers_baseline,
+        _baseline_covers_feature,
+        baseline_relscore,
+        feature_relscore,
+        relscore_ratio,
+    ) in summary_rows:
+        campaign = campaigns.get(campaign_name, {})
+        if not campaign or baseline not in campaign or feature not in campaign:
+            continue
+        relscores_by_sample = per_sample_relscores(campaign)
+        baseline_scores_by_sample = relscores_by_sample.get(baseline, {})
+        feature_scores_by_sample = relscores_by_sample.get(feature, {})
+        shared_ids = sorted(set(baseline_scores_by_sample) & set(feature_scores_by_sample))
+        baseline_seed_ids = {
+            sample_id for sample_id in baseline_scores_by_sample if sample_id.startswith("seed-")
+        }
+        feature_seed_ids = {
+            sample_id for sample_id in feature_scores_by_sample if sample_id.startswith("seed-")
+        }
+        seed_pairing_expected = pairing_mode == "paired"
+        expected_pairs = (
+            min(len(baseline_seed_ids), len(feature_seed_ids))
+            if seed_pairing_expected
+            else 0
+        )
+        pairing_rate = len(shared_ids) / expected_pairs if expected_pairs else 0.0
+        paired = seed_pairing_expected and expected_pairs > 0 and bool(shared_ids)
+        if paired:
+            sample_ids = shared_ids
+            baseline_scores = [baseline_scores_by_sample[sample_id] for sample_id in sample_ids]
+            feature_scores = [feature_scores_by_sample[sample_id] for sample_id in sample_ids]
+        elif seed_pairing_expected:
+            sample_ids = []
+            baseline_scores = []
+            feature_scores = []
+        else:
+            sample_ids = sorted(feature_scores_by_sample)
+            baseline_scores = list(baseline_scores_by_sample.values())
+            feature_scores = list(feature_scores_by_sample.values())
+        statistic, p_value = (
+            _wilcoxon_signed_rank(feature_scores, baseline_scores)
+            if paired
+            else (0.0, 1.0)
+            if seed_pairing_expected
+            else _mann_whitney_u(feature_scores, baseline_scores)
+        )
+        feature_relcovs = _relcov_samples(
+            campaign,
+            feature,
+            baseline,
+            sample_ids if paired else None,
+        )
+        if paired:
+            ratio_samples, ratio_status = _ratio_samples(
+                feature_scores_by_sample,
+                baseline_scores_by_sample,
+                sample_ids,
+            )
+        else:
+            baseline_mean = _mean(baseline_scores)
+            if baseline_mean > 0.0:
+                ratio_samples = [score / baseline_mean for score in feature_scores]
+                ratio_status = "ok"
+            else:
+                ratio_samples = []
+                ratio_status = "undefined (zero baseline relscore)"
+        n_samples = (
+            len(shared_ids)
+            if paired
+            else 0
+            if seed_pairing_expected
+            else min(len(feature_scores), len(baseline_scores))
+        )
+        seed_ids = baseline_seed_ids | feature_seed_ids
+        n_seeds = len(shared_ids) if paired else len(seed_ids)
+        too_few_samples = n_samples < min_samples
+        ratio_ci = _bca_mean_ci(ratio_samples, confidence_level, min_samples)
+        relcov_ci = _bca_mean_ci(feature_relcovs, confidence_level, min_samples)
+        if seed_pairing_expected and not paired:
+            reason = "paired mode requires matched seed labels; unpaired fallback disabled"
+        elif seed_pairing_expected and pairing_rate < 0.8:
+            reason = f"low matched seed rate {len(shared_ids)}/{expected_pairs}; use verdict with caution"
+        elif too_few_samples:
+            reason = "too few runs"
+        else:
+            reason = "not significant after correction"
+        test_name = (
+            "wilcoxon-signed-rank"
+            if paired
+            else "paired-required"
+            if seed_pairing_expected
+            else "mann-whitney-u"
+        )
+        base_row = {
+            "campaign": campaign_name,
+            "baseline": baseline,
+            "feature": feature,
+            "legacy_verdict": legacy_verdict,
+            "pairing_mode": pairing_mode,
+            "n_trials": n_samples,
+            "n_samples": n_samples,
+            "n_seeds": n_seeds,
+            "paired": paired,
+            "pairing_rate": pairing_rate,
+            "too_few_samples": too_few_samples,
+            "test_name": test_name,
+            "statistic": statistic,
+            "p_value": p_value,
+            "effect_size_a12": _a12(feature_scores, baseline_scores),
+            "baseline_sample_mean": _mean(baseline_scores),
+            "feature_sample_mean": _mean(feature_scores),
+            "relscore_ratio": relscore_ratio,
+            "relscore_ratio_ci_low": ratio_ci[0],
+            "relscore_ratio_ci_high": ratio_ci[1],
+            "relscore_ratio_ci_status": ratio_ci[2] if ratio_status == "ok" else ratio_status,
+            "covers_baseline": feature_covers_baseline,
+            "covers_baseline_ci_low": relcov_ci[0],
+            "covers_baseline_ci_high": relcov_ci[1],
+            "covers_baseline_ci_status": relcov_ci[2],
+            "missing_count": 0,
+            "reason": reason,
+        }
+        rows.append({**base_row, "metric": "relscore"})
+        rows.append(
+            {
+                **base_row,
+                "metric": "relcov",
+                "test_name": "bootstrap-bca",
+                "statistic": feature_covers_baseline,
+                "p_value": 1.0,
+                "effect_size_a12": 0.5,
+            }
+        )
+    for row in rows:
+        row["p_value_adjusted"] = row["p_value"]
+    target_indices = [
+        idx
+        for idx, row in enumerate(rows)
+        if row["metric"] == "relscore"
+        and _is_target_family_campaign(str(row["campaign"]))
+    ]
+    target_adjusted = _holm_adjust([float(rows[idx]["p_value"]) for idx in target_indices])
+    for idx, p_adjusted in zip(target_indices, target_adjusted):
+        rows[idx]["p_value_adjusted"] = p_adjusted
+
+    verdict_by_campaign: Dict[Tuple[str, str], str] = {}
+    reason_by_campaign: Dict[Tuple[str, str], str] = {}
+    for row in rows:
+        if row["metric"] != "relscore":
+            continue
+        key = (str(row["campaign"]), str(row["feature"]))
+        verdict = _statistical_verdict(row, confidence_level, relcov_floor)
+        row["verdict"] = verdict
+        row["reason"] = _verdict_reason(row, relcov_floor)
+        verdict_by_campaign[key] = verdict
+        reason_by_campaign[key] = row["reason"]
+    for row in rows:
+        key = (str(row["campaign"]), str(row["feature"]))
+        row["verdict"] = verdict_by_campaign.get(key, "inconclusive")
+        row["reason"] = reason_by_campaign.get(key, row["reason"])
+
+    target_verdict_rows = [
+        row
+        for row in rows
+        if row["metric"] == "relscore" and _is_target_family_campaign(str(row["campaign"]))
+    ]
+    target_count = len(target_verdict_rows)
+    improvement_count = sum(1 for row in target_verdict_rows if row["verdict"] == "improvement")
+    relcov_floor_held_for_all_targets = target_count > 0 and all(
+        row["covers_baseline_ci_status"] == "ok"
+        and row["covers_baseline_ci_low"] is not None
+        and row["covers_baseline_ci_low"] >= relcov_floor
+        for row in target_verdict_rows
+    )
+    aggregate_verdict = "inconclusive"
+    if any(row["verdict"] == "regression" for row in target_verdict_rows):
+        aggregate_verdict = "regression"
+    elif any(row["verdict"] == "needs-review" for row in target_verdict_rows):
+        aggregate_verdict = "needs-review"
+    elif (
+        target_count > 0
+        and improvement_count > target_count / 2
+        and relcov_floor_held_for_all_targets
+    ):
+        aggregate_verdict = "improvement"
+    campaign_rows = [row for row in rows if row["metric"] == "relscore"]
+
+    verdict_state = {
+        "version": 1,
+        "confidence_level": confidence_level,
+        "relcov_floor": relcov_floor,
+        "min_samples": min_samples,
+        "aggregate": {
+            "winner": "",
+            "verdict": aggregate_verdict,
+            "eligible_count": len(campaign_rows),
+            "total_samples": sum(int(row["n_samples"]) for row in campaign_rows),
+        },
+    }
+    return rows, verdict_state
 
 
 def build_differential_coverage_summary_rows(
@@ -1850,34 +2372,34 @@ def build_differential_coverage_summary_rows(
     relscores: Dict[str, float],
     relcovs: Dict[str, Dict[str, float]],
 ) -> List[Tuple[str, str, str, str, float, float, float, float, float]]:
-    pair = find_baseline_candidate(relcovs.keys())
+    pair = find_baseline_feature(relcovs.keys())
     if pair is None:
         return []
-    baseline, candidate = pair
-    if baseline not in relscores or candidate not in relscores:
+    baseline, feature = pair
+    if baseline not in relscores or feature not in relscores:
         return []
 
-    candidate_covers_baseline = relcovs.get(candidate, {}).get(baseline)
-    baseline_covers_candidate = relcovs.get(baseline, {}).get(candidate)
-    if candidate_covers_baseline is None or baseline_covers_candidate is None:
+    feature_covers_baseline = relcovs.get(feature, {}).get(baseline)
+    baseline_covers_feature = relcovs.get(baseline, {}).get(feature)
+    if feature_covers_baseline is None or baseline_covers_feature is None:
         return []
 
     baseline_relscore = relscores[baseline]
-    candidate_relscore = relscores[candidate]
+    feature_relscore = relscores[feature]
     verdict = differential_coverage_verdict(
-        candidate_covers_baseline, candidate_relscore, baseline_relscore
+        feature_covers_baseline, feature_relscore, baseline_relscore
     )
-    relscore_ratio = candidate_relscore / baseline_relscore if baseline_relscore else 0.0
+    relscore_ratio = feature_relscore / baseline_relscore if baseline_relscore else 0.0
     return [
         (
             campaign_name,
             baseline,
-            candidate,
+            feature,
             verdict,
-            candidate_covers_baseline,
-            baseline_covers_candidate,
+            feature_covers_baseline,
+            baseline_covers_feature,
             baseline_relscore,
-            candidate_relscore,
+            feature_relscore,
             relscore_ratio,
         )
     ]
@@ -1909,11 +2431,20 @@ def showmap_max_work_items_from_env() -> int:
     return max(value, 0)
 
 
+def _format_csv_float(value: Any) -> str:
+    if value is None:
+        return "insufficient n"
+    return f"{float(value):.6f}"
+
+
 def write_differential_coverage_outputs(
     logs_dir: Path,
     out_dir: Path,
     excluded_fuzzers: Optional[Set[str]] = None,
     max_work_items: Optional[int] = None,
+    pairing_mode: str = "unpaired",
+    confidence_level: float = 0.95,
+    min_samples: int = DEFAULT_MIN_VERDICT_SAMPLES,
 ) -> None:
     trials, skipped = load_showmap_trials(logs_dir, excluded_fuzzers)
     campaigns = build_showmap_campaigns(trials)
@@ -1994,46 +2525,121 @@ def write_differential_coverage_outputs(
             writer.writerow([campaign_name, approach, reference, f"{relcov:.6f}"])
 
     summary_csv = out_dir / "differential_coverage_summary.csv"
+    verdict_rows, verdict_state = build_differential_coverage_verdict_rows(
+        summary_rows,
+        campaigns,
+        confidence_level=confidence_level,
+        pairing_mode=pairing_mode,
+        min_samples=min_samples,
+    )
+    verdict_by_key = {
+        (row["campaign"], row["feature"], row["metric"]): row for row in verdict_rows
+    }
     with summary_csv.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
                 "campaign",
+                "metric",
                 "baseline",
-                "candidate",
+                "feature",
                 "verdict",
-                "candidate_covers_baseline",
-                "baseline_covers_candidate",
+                "verdict_reason",
+                "legacy_verdict",
+                "feature_covers_baseline",
+                "baseline_covers_feature",
                 "baseline_relscore",
-                "candidate_relscore",
+                "feature_relscore",
                 "relscore_ratio",
+                "pairing_mode",
+                "n_trials",
+                "n_samples",
+                "n_seeds",
+                "paired",
+                "pairing_rate",
+                "too_few_samples",
+                "test_name",
+                "statistic",
+                "p_value",
+                "p_value_adjusted",
+                "effect_size_a12",
+                "baseline_sample_mean",
+                "feature_sample_mean",
+                "relscore_ratio_ci_low",
+                "relscore_ratio_ci_high",
+                "relscore_ratio_ci_status",
+                "covers_baseline_ci_low",
+                "covers_baseline_ci_high",
+                "covers_baseline_ci_status",
+                "missing_count",
             ]
         )
-        for row in summary_rows:
+        for source_row in summary_rows:
             (
                 campaign_name,
                 baseline,
-                candidate,
-                verdict,
-                candidate_covers_baseline,
-                baseline_covers_candidate,
+                feature,
+                legacy_verdict,
+                feature_covers_baseline,
+                baseline_covers_feature,
                 baseline_relscore,
-                candidate_relscore,
+                feature_relscore,
                 relscore_ratio,
-            ) = row
-            writer.writerow(
-                [
-                    campaign_name,
-                    baseline,
-                    candidate,
-                    verdict,
-                    f"{candidate_covers_baseline:.6f}",
-                    f"{baseline_covers_candidate:.6f}",
-                    f"{baseline_relscore:.6f}",
-                    f"{candidate_relscore:.6f}",
-                    f"{relscore_ratio:.6f}",
-                ]
-            )
+            ) = source_row
+            for metric in ("relscore", "relcov"):
+                verdict_row = verdict_by_key.get((campaign_name, feature, metric), {})
+                writer.writerow(
+                    [
+                        campaign_name,
+                        metric,
+                        baseline,
+                        feature,
+                        verdict_row.get("verdict", "inconclusive"),
+                        verdict_row.get("reason", ""),
+                        legacy_verdict,
+                        f"{feature_covers_baseline:.6f}",
+                        f"{baseline_covers_feature:.6f}",
+                        f"{baseline_relscore:.6f}",
+                        f"{feature_relscore:.6f}",
+                        f"{relscore_ratio:.6f}",
+                        verdict_row.get("pairing_mode", pairing_mode),
+                        verdict_row.get("n_trials", ""),
+                        verdict_row.get("n_samples", ""),
+                        verdict_row.get("n_seeds", ""),
+                        str(verdict_row.get("paired", "")).lower(),
+                        f"{float(verdict_row.get('pairing_rate', 0.0)):.6f}" if verdict_row else "",
+                        str(verdict_row.get("too_few_samples", "")).lower(),
+                        verdict_row.get("test_name", ""),
+                        _format_csv_float(verdict_row.get("statistic", 0.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("p_value", 1.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("p_value_adjusted", 1.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("effect_size_a12", 0.5)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("baseline_sample_mean", 0.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("feature_sample_mean", 0.0)) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("relscore_ratio_ci_low")) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("relscore_ratio_ci_high")) if verdict_row else "",
+                        verdict_row.get("relscore_ratio_ci_status", ""),
+                        _format_csv_float(verdict_row.get("covers_baseline_ci_low")) if verdict_row else "",
+                        _format_csv_float(verdict_row.get("covers_baseline_ci_high")) if verdict_row else "",
+                        verdict_row.get("covers_baseline_ci_status", ""),
+                        verdict_row.get("missing_count", ""),
+                    ]
+                )
+
+    statistics_path = out_dir / "differential_coverage_statistics.json"
+    with statistics_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "schema": "scfuzzbench.differential_coverage.statistics.v1",
+                "pairing_mode": pairing_mode,
+                "rows": verdict_rows,
+                "state": verdict_state,
+            },
+            handle,
+            indent=2,
+            sort_keys=True,
+        )
+        handle.write("\n")
 
     manifest_path = out_dir / "showmap_campaign_manifest.json"
     with manifest_path.open("w", encoding="utf-8") as handle:
@@ -2064,7 +2670,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use raw directory names as fuzzer labels instead of normalizing.",
     )
-
+    run_parser.add_argument(
+        "--pairing-mode",
+        choices=["unpaired", "paired"],
+        default="unpaired",
+        help="Differential coverage test mode: independent rounds or explicit paired runs.",
+    )
+    run_parser.add_argument(
+        "--confidence-level",
+        type=float,
+        default=0.95,
+        help="Confidence level for differential coverage intervals and tests.",
+    )
+    run_parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=DEFAULT_MIN_VERDICT_SAMPLES,
+        help="Minimum per-arm samples required before a statistical verdict can be conclusive.",
+    )
     return parser.parse_args()
 
 
@@ -2131,7 +2754,13 @@ def main() -> int:
         write_progress_metrics_summary_csv(
             progress_metrics_samples, progress_metrics_summary_csv
         )
-        write_differential_coverage_outputs(args.logs_dir, out_dir)
+        write_differential_coverage_outputs(
+            args.logs_dir,
+            out_dir,
+            pairing_mode=args.pairing_mode,
+            confidence_level=args.confidence_level,
+            min_samples=args.min_samples,
+        )
         return 0
     return 1
 

@@ -40,6 +40,24 @@ def main() -> int:
         action="store_true",
         help="Use raw directory names as fuzzer labels instead of normalizing.",
     )
+    parser.add_argument(
+        "--pairing-mode",
+        choices=["unpaired", "paired"],
+        default="unpaired",
+        help="Differential coverage test mode.",
+    )
+    parser.add_argument(
+        "--confidence-level",
+        type=float,
+        default=0.95,
+        help="Confidence level for differential coverage intervals and tests.",
+    )
+    parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=analyze.DEFAULT_MIN_VERDICT_SAMPLES,
+        help="Minimum per-arm samples required before a statistical verdict can be conclusive.",
+    )
     args = parser.parse_args()
 
     timings: Dict[str, float] = {}
@@ -98,7 +116,14 @@ def main() -> int:
             progress_metrics_samples, args.out_dir / "progress_metrics_summary.csv"
         )
     with timed_step("write_differential_coverage_outputs", timings):
-        analyze.write_differential_coverage_outputs(args.logs_dir, args.out_dir, exclude)
+        analyze.write_differential_coverage_outputs(
+            args.logs_dir,
+            args.out_dir,
+            exclude,
+            pairing_mode=args.pairing_mode,
+            confidence_level=args.confidence_level,
+            min_samples=args.min_samples,
+        )
     with (args.out_dir / "analysis_timing.json").open("w", encoding="utf-8") as handle:
         json.dump(
             {
