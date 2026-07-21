@@ -141,6 +141,24 @@ class ProgressMetricsParserTests(unittest.TestCase):
             [(0.0, 100.0), (10.0, 122.0), (5.0, 112.0)],
         )
 
+    def test_foundry_aggregation_keeps_first_json_timestamp_baseline(self):
+        log_path = self.write_log(
+            [
+                '{"timestamp":100,"event":"failure","contract":"Target"}',
+                '{"timestamp":110,"event":"pulse","contract":"Target","metrics":{"cumulative_edges_seen":100,"corpus_count":50},"worker":{"id":0,"count":1}}',
+                '{"timestamp":115,"event":"pulse","contract":"Target","metrics":{"cumulative_edges_seen":110,"corpus_count":55},"worker":{"id":0,"count":1}}',
+            ]
+        )
+
+        samples = analyze.parse_progress_metrics_log(
+            log_path, "run-1", "i-1", "foundry-git-test"
+        )
+
+        self.assertEqual(
+            [(sample.elapsed_seconds, sample.corpus_size) for sample in samples],
+            [(10.0, 50.0), (15.0, 55.0)],
+        )
+
     def test_delayed_foundry_pulse_is_not_treated_as_counter_reset(self):
         log_path = self.write_log(
             [

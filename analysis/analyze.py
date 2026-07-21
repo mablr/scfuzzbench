@@ -277,6 +277,7 @@ def precompute_foundry_progress_aggregates(
     Tuple[float, Optional[float], Optional[float], Optional[float]],
 ]:
     """Aggregates orderable Foundry pulses without changing raw log order."""
+    first_json_timestamp: Optional[float] = None
     pulses: List[
         Tuple[
             float,
@@ -301,6 +302,12 @@ def precompute_foundry_progress_aggregates(
                 continue
 
             timestamp = parse_optional_float(payload.get("timestamp"))
+            if (
+                timestamp is not None
+                and math.isfinite(timestamp)
+                and first_json_timestamp is None
+            ):
+                first_json_timestamp = timestamp
             stream = FoundryProgressAccumulator.stream_id(payload)
             if timestamp is None or not math.isfinite(timestamp) or stream is None:
                 continue
@@ -328,7 +335,12 @@ def precompute_foundry_progress_aggregates(
         return aggregates
 
     pulses.sort(key=lambda pulse: (pulse[0], pulse[1]))
-    first_timestamp = pulses[0][0]
+    # Preserve the raw parser's baseline when non-pulse JSON precedes progress output, while
+    # still allowing delayed earlier pulses to be ordered on a non-negative timeline.
+    first_timestamp = min(
+        first_json_timestamp if first_json_timestamp is not None else pulses[0][0],
+        pulses[0][0],
+    )
     for (
         timestamp,
         line_index,
